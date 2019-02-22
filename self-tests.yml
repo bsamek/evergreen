@@ -122,9 +122,9 @@ variables:
       - command: shell.exec
         type: system
         params:
+          working_dir: gopath/src/github.com/evergreen-ci/evergreen
           shell: bash
           script: |
-            set -o xtrace
             find .
   - &version-constants
     nodejs_version: "6.11.1"
