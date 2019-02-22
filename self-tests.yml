@@ -119,6 +119,9 @@ variables:
       - func: run-make
         vars:
           target: "${task_name}"
+      - command: subprocess.exec
+        working_dir: gopath/src/github.com/evergreen-ci/evergreen
+        command: find .
   - &version-constants
     nodejs_version: "6.11.1"
   - &run-generate-lint
@@ -406,6 +409,8 @@ tasks:
 buildvariants:
   - name: ubuntu1604
     display_name: Ubuntu 16.04
+    modules:
+      - test_module
     run_on:
       - ubuntu1604-test
     expansions:
@@ -552,5 +557,5 @@ buildvariants:
 modules:
 - name: test_module
   repo: git@github.com:mongodb/docs.git
-  prefix: docs
+  prefix: gopath/src/github.com/evergreen-ci/evergreen/docs
   branch: master
