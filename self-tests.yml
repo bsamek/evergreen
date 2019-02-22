@@ -119,9 +119,13 @@ variables:
       - func: run-make
         vars:
           target: "${task_name}"
-      - command: subprocess.exec
-        working_dir: gopath/src/github.com/evergreen-ci/evergreen
-        command: find .
+      - command: shell.exec
+        type: system
+        params:
+          shell: bash
+          script: |
+            set -o xtrace
+            find gopath/src/github.com/evergreen-ci/evergreen
   - &version-constants
     nodejs_version: "6.11.1"
   - &run-generate-lint
