@@ -125,7 +125,7 @@ variables:
           shell: bash
           script: |
             set -o xtrace
-            find gopath/src/github.com/evergreen-ci/evergreen
+            find .
   - &version-constants
     nodejs_version: "6.11.1"
   - &run-generate-lint
