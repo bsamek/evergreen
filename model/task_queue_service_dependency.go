@@ -4,6 +4,7 @@ package model
 // TODO Dependencies other than success.
 
 import (
+	"fmt"
 	"sync"
 	"time"
 
@@ -45,6 +46,9 @@ func newDistroTaskDAGDispatchService(distroID string, items []TaskQueueItem, ttl
 		ttl:      ttl,
 	}
 	t.graph = simple.NewDirectedGraph()
+	t.itemNodeMap = map[string]graph.Node{}
+	t.nodeItemMap = map[int64]*TaskQueueItem{}
+	t.taskGroups = map[string]taskGroupTasks{}
 	if len(items) != 0 {
 		t.rebuild(items)
 	}
@@ -72,6 +76,7 @@ func (t *taskDistroDAGDispatchService) Refresh() error {
 }
 
 func (t *taskDistroDAGDispatchService) addItem(item TaskQueueItem) {
+	fmt.Printf("> adding item %s\n", item.Id)
 	node := t.graph.NewNode()
 	t.graph.AddNode(node)
 	t.nodeItemMap[node.ID()] = &item
@@ -99,6 +104,7 @@ func (t *taskDistroDAGDispatchService) getNodeByItem(id string) graph.Node {
 }
 
 func (t *taskDistroDAGDispatchService) addEdge(from string, to string) {
+	fmt.Printf("> adding edge %s -> %s\n", from, to)
 	edge := simple.Edge{
 		F: simple.Node(t.itemNodeMap[from].ID()),
 		T: simple.Node(t.itemNodeMap[to].ID()),
