@@ -4,7 +4,6 @@ package model
 // TODO Dependencies other than success.
 
 import (
-	"fmt"
 	"sync"
 	"time"
 
@@ -27,7 +26,7 @@ type taskDistroDAGDispatchService struct {
 	sorted      []graph.Node
 	itemNodeMap map[string]graph.Node
 	nodeItemMap map[int64]*TaskQueueItem
-	taskGroups  []taskGroupTasks
+	taskGroups  map[string]taskGroupTasks
 	ttl         time.Duration
 	lastUpdated time.Time
 }
@@ -72,16 +71,16 @@ func (t *taskDistroDAGDispatchService) Refresh() error {
 	return nil
 }
 
-func (t *taskDistroDAGDispatchService) addItem(item TaskQueueItem) graph.Node {
+func (t *taskDistroDAGDispatchService) addItem(item TaskQueueItem) {
 	node := t.graph.NewNode()
 	t.graph.AddNode(node)
-	t.nodeItemMap[node.ID()] = item
+	t.nodeItemMap[node.ID()] = &item
 	t.itemNodeMap[item.Id] = node
 }
 
 func (t *taskDistroDAGDispatchService) getItemByNode(id int64) *TaskQueueItem {
 	if item, ok := t.nodeItemMap[id]; ok {
-		return &item
+		return item
 	}
 	grip.Error(message.Fields{
 		"message": "programmer error, couldn't find node in map",
@@ -102,7 +101,7 @@ func (t *taskDistroDAGDispatchService) getNodeByItem(id string) graph.Node {
 func (t *taskDistroDAGDispatchService) addEdge(from string, to string) {
 	edge := simple.Edge{
 		F: simple.Node(t.itemNodeMap[from].ID()),
-		t: simple.Node(t.itemNodeMap[to].ID()),
+		T: simple.Node(t.itemNodeMap[to].ID()),
 	}
 	t.graph.SetEdge(edge)
 }
@@ -113,39 +112,47 @@ func (t *taskDistroDAGDispatchService) rebuild(items []TaskQueueItem) {
 	t.lastUpdated = time.Now()
 
 	// Add items to the graph
-	for i, item := range items {
+	for _, item := range items {
 		t.addItem(item)
 	}
 
 	// Persist task groups
-	t.taskGroups = map[string][]TaskQueueItem{}
+	t.taskGroups = map[string]taskGroupTasks{}
 	for _, item := range items {
 		if item.Group != "" {
-			id = compositeGroupId(item.Group, item.BuildVariant, item.Version)
-			if _, ok = taskGroups[id]; !ok {
-				taskGroups[id] = []TaskQueueItem{item}
+			id := compositeGroupId(item.Group, item.BuildVariant, item.Version)
+			if _, ok := t.taskGroups[id]; !ok {
+				t.taskGroups[id] = taskGroupTasks{
+					id:       item.Id,
+					maxHosts: item.GroupMaxHosts,
+					tasks:    []TaskQueueItem{item},
+				}
 			} else {
-				taskGroups[id] = append(taskGroups, item)
+				taskGroup := t.taskGroups[id]
+				taskGroup.tasks = append(taskGroup.tasks, item)
+				t.taskGroups[id] = taskGroup
 			}
 		}
 	}
 
-	// Add task group of 1 edges
-	var currentItem *TaskQueueItem
-	for _, taskGroupItems := range taskGroups {
-		currentItem = nil
-		for i, item := range taskGroupItems {
+	// Add edges for task groups of 1
+	var currentItem TaskQueueItem
+	var currentItemExists bool
+	for _, taskGroup := range t.taskGroups {
+		currentItemExists = false
+		for _, item := range taskGroup.tasks {
 			if item.GroupMaxHosts != 1 {
 				break
 			}
-			if currentItem != nil {
+			if currentItemExists {
 				t.addEdge(currentItem.Id, item.Id)
 			}
 			currentItem = item
+			currentItemExists = true
 		}
 	}
 
-	// Add edges from task dependencies
+	// Add edges for task dependencies
 	for _, item := range items {
 		for _, dep := range item.Dependencies {
 			t.addEdge(item.Id, dep)
@@ -153,9 +160,9 @@ func (t *taskDistroDAGDispatchService) rebuild(items []TaskQueueItem) {
 	}
 
 	// Sort the graph
-	sorted, err := topo.Sort()
+	sorted, err := topo.Sort(t.graph)
 	if err != nil {
-		grip.Alert(message.WrapError(message.Fields{
+		grip.Alert(message.WrapError(err, message.Fields{
 			"message": "problem sorting tasks",
 		}))
 		return
@@ -172,9 +179,9 @@ func (t *taskDistroDAGDispatchService) FindNextTask(spec TaskSpec) *TaskQueueIte
 
 	// If the host just ran a task group, give it one back
 	if spec.Group != "" {
-		taskGroup, ok = t.taskGroups[compositeGroupId(spec.Group, spec.BuildVariant, spec.Version)]
+		taskGroup, ok := t.taskGroups[compositeGroupId(spec.Group, spec.BuildVariant, spec.Version)]
 		if ok {
-			if next = t.nextTaskGroupTask(taskGroup); next != nil {
+			if next := t.nextTaskGroupTask(taskGroup); next != nil {
 				return next
 			}
 		}
@@ -183,19 +190,19 @@ func (t *taskDistroDAGDispatchService) FindNextTask(spec TaskSpec) *TaskQueueIte
 	}
 
 	// Iterate through the topologically-sorted graph.
-	for i := len(t.sorted - 1); i >= 0; i-- {
+	for i := len(t.sorted) - 1; i >= 0; i-- {
 		node := t.sorted[i]
-		item := t.getItemByNode(node)
+		item := t.getItemByNode(node.ID())
 
 		// If we get to a task that has unfulfilled dependencies, there are no more tasks
 		// that are dispatchable in the in-memory queue.
-		if len(t.graph.From(node.ID())) > 0 {
+		if len(t.graph.From(node)) > 0 {
 			break
 		}
 
 		// If maxHosts is not set, this is not a task group.
-		if item.maxHosts == 0 {
-			return &item
+		if item.GroupMaxHosts == 0 {
+			return item
 		}
 
 		// For a task group task, do some arithmetic to see if it's dispatchable
@@ -216,7 +223,7 @@ func (t *taskDistroDAGDispatchService) FindNextTask(spec TaskSpec) *TaskQueueIte
 			taskGroup.runningHosts = numHosts
 			t.taskGroups[taskGroupID] = taskGroup
 			if taskGroup.runningHosts < taskGroup.maxHosts {
-				if next = t.nextTaskGroupTask(taskGroup); next != nil {
+				if next := t.nextTaskGroupTask(taskGroup); next != nil {
 					return next
 				}
 			}
@@ -227,10 +234,6 @@ func (t *taskDistroDAGDispatchService) FindNextTask(spec TaskSpec) *TaskQueueIte
 	// later tasks in the queue. Currently we just wait for the scheduler to rerun.
 
 	return nil
-}
-
-func compositeGroupId(group, variant, version string) string {
-	return fmt.Sprintf("%s-%s-%s", group, variant, version)
 }
 
 func (t *taskDistroDAGDispatchService) nextTaskGroupTask(taskGroup taskGroupTasks) *TaskQueueItem {
@@ -255,7 +258,7 @@ func (t *taskDistroDAGDispatchService) nextTaskGroupTask(taskGroup taskGroupTask
 			return nil
 		}
 
-		if isBlockedSingleHostTaskGroup(taskGroup, nextTaskFromDB) {
+		if t.isBlockedSingleHostTaskGroup(taskGroup, nextTaskFromDB) {
 			delete(t.taskGroups, taskGroup.id)
 			return nil
 		}
