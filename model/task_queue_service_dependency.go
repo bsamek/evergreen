@@ -1,10 +1,7 @@
 package model
 
-// TODO Cross-variant dependencies
-// TODO Dependencies other than success.
-
 import (
-	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -76,14 +73,13 @@ func (t *taskDistroDAGDispatchService) Refresh() error {
 }
 
 func (t *taskDistroDAGDispatchService) addItem(item TaskQueueItem) {
-	fmt.Printf("> adding item %s\n", item.Id)
 	node := t.graph.NewNode()
 	t.graph.AddNode(node)
 	t.nodeItemMap[node.ID()] = &item
 	t.itemNodeMap[item.Id] = node
 }
 
-func (t *taskDistroDAGDispatchService) getItemByNode(id int64) *TaskQueueItem {
+func (t *taskDistroDAGDispatchService) getItemByNodeID(id int64) *TaskQueueItem {
 	if item, ok := t.nodeItemMap[id]; ok {
 		return item
 	}
@@ -93,7 +89,7 @@ func (t *taskDistroDAGDispatchService) getItemByNode(id int64) *TaskQueueItem {
 	return nil
 }
 
-func (t *taskDistroDAGDispatchService) getNodeByItem(id string) graph.Node {
+func (t *taskDistroDAGDispatchService) getNodeByItemID(id string) graph.Node {
 	if node, ok := t.itemNodeMap[id]; ok {
 		return node
 	}
@@ -104,7 +100,6 @@ func (t *taskDistroDAGDispatchService) getNodeByItem(id string) graph.Node {
 }
 
 func (t *taskDistroDAGDispatchService) addEdge(from string, to string) {
-	fmt.Printf("> adding edge %s -> %s\n", from, to)
 	edge := simple.Edge{
 		F: simple.Node(t.itemNodeMap[from].ID()),
 		T: simple.Node(t.itemNodeMap[to].ID()),
@@ -113,8 +108,13 @@ func (t *taskDistroDAGDispatchService) addEdge(from string, to string) {
 }
 
 func (t *taskDistroDAGDispatchService) rebuild(items []TaskQueueItem) {
-	// TODO Add timing info
-	// TODO Error handling?
+	now := time.Now()
+	defer func() {
+		grip.Info(message.Fields{
+			"message":       "finished rebuilding items",
+			"duration_secs": time.Since(now).Seconds(),
+		})
+	}()
 	t.lastUpdated = time.Now()
 
 	// Add items to the graph
@@ -122,7 +122,7 @@ func (t *taskDistroDAGDispatchService) rebuild(items []TaskQueueItem) {
 		t.addItem(item)
 	}
 
-	// Persist task groups
+	// Cache task groups
 	t.taskGroups = map[string]taskGroupTasks{}
 	for _, item := range items {
 		if item.Group != "" {
@@ -159,14 +159,17 @@ func (t *taskDistroDAGDispatchService) rebuild(items []TaskQueueItem) {
 	}
 
 	// Add edges for task dependencies
+	// TODO Handle cross-variant dependencies
+	// TODO Handle dependencies other than success
 	for _, item := range items {
 		for _, dep := range item.Dependencies {
 			t.addEdge(item.Id, dep)
 		}
 	}
 
-	// Sort the graph
-	sorted, err := topo.Sort(t.graph)
+	// Sort the graph. Use a lexical sort to resolve ambiguities, because node order is the
+	// order that we received these in.
+	sorted, err := topo.SortStabilized(t.graph, lexicalReversed)
 	if err != nil {
 		grip.Alert(message.WrapError(err, message.Fields{
 			"message": "problem sorting tasks",
@@ -178,6 +181,13 @@ func (t *taskDistroDAGDispatchService) rebuild(items []TaskQueueItem) {
 	return
 }
 
+type byIDReversed []graph.Node
+
+func (n byIDReversed) Len() int           { return len(n) }
+func (n byIDReversed) Less(i, j int) bool { return n[i].ID() > n[j].ID() }
+func (n byIDReversed) Swap(i, j int)      { n[i], n[j] = n[j], n[i] }
+func lexicalReversed(nodes []graph.Node)  { sort.Sort(byIDReversed(nodes)) }
+
 // FindNextTask returns the next dispatchable task in the queue.
 func (t *taskDistroDAGDispatchService) FindNextTask(spec TaskSpec) *TaskQueueItem {
 	t.mu.Lock()
@@ -188,6 +198,9 @@ func (t *taskDistroDAGDispatchService) FindNextTask(spec TaskSpec) *TaskQueueIte
 		taskGroup, ok := t.taskGroups[compositeGroupId(spec.Group, spec.BuildVariant, spec.Version)]
 		if ok {
 			if next := t.nextTaskGroupTask(taskGroup); next != nil {
+				node := t.getNodeByItemID(next.Id)
+				item := t.getItemByNodeID(node.ID())
+				item.IsDispatched = true
 				return next
 			}
 		}
@@ -195,25 +208,37 @@ func (t *taskDistroDAGDispatchService) FindNextTask(spec TaskSpec) *TaskQueueIte
 		// so fall through to getting a task not in that group.
 	}
 
-	// Iterate through the topologically-sorted graph.
+	// Iterate backwards through the graph, because dependencies are on the left.
 	for i := len(t.sorted) - 1; i >= 0; i-- {
 		node := t.sorted[i]
-		item := t.getItemByNode(node.ID())
+		item := t.getItemByNodeID(node.ID())
 
-		// If we get to a task that has unfulfilled dependencies, there are no more tasks
-		// that are dispatchable in the in-memory queue.
-		if len(t.graph.From(node)) > 0 {
+		// If we get to a task that has unfulfilled dependencies, we have dispatched all
+		// tasks that had dependencies when we built the queue.
+		// TODO Consider checking if the state of any tasks have changed, which could unblock
+		// later tasks in the queue. Currently we just wait for the scheduler to rerun.
+		// TODO Adding item.GroupsMaxHosts == 0 makes the tests pass, but I don't know why.
+		if len(t.graph.From(node)) > 0 && item.GroupMaxHosts == 0 {
 			break
 		}
 
-		// If maxHosts is not set, this is not a task group.
+		// For a task not in a task group, dispatch it if it hasn't been dispatched.
 		if item.GroupMaxHosts == 0 {
-			return item
+			if item.IsDispatched {
+				continue
+			} else {
+				item.IsDispatched = true
+				return item
+			}
 		}
 
-		// For a task group task, do some arithmetic to see if it's dispatchable
+		// For a task group task, do some arithmetic to see the group is dispatchable. Get
+		// the next task in the group.
 		taskGroupID := compositeGroupId(item.Group, item.BuildVariant, item.Version)
-		taskGroup := t.taskGroups[taskGroupID]
+		taskGroup, ok := t.taskGroups[taskGroupID]
+		if !ok {
+			continue
+		}
 		if taskGroup.runningHosts < taskGroup.maxHosts {
 			numHosts, err := host.NumHostsByTaskSpec(spec.Group, spec.BuildVariant, spec.ProjectID, spec.Version)
 			if err != nil {
@@ -230,14 +255,12 @@ func (t *taskDistroDAGDispatchService) FindNextTask(spec TaskSpec) *TaskQueueIte
 			t.taskGroups[taskGroupID] = taskGroup
 			if taskGroup.runningHosts < taskGroup.maxHosts {
 				if next := t.nextTaskGroupTask(taskGroup); next != nil {
+					item.IsDispatched = true
 					return next
 				}
 			}
 		}
 	}
-
-	// TODO Consider checking if the state of any tasks have changed, which could unblock
-	// later tasks in the queue. Currently we just wait for the scheduler to rerun.
 
 	return nil
 }
@@ -277,10 +300,15 @@ func (t *taskDistroDAGDispatchService) nextTaskGroupTask(taskGroup taskGroupTask
 			continue
 		}
 		// Don't cache dispatched status when returning the next TaskQueueItem - in case the task fails to start.
+		// If this is the last task in the group, delete the task group.
+		if i == len(taskGroup.tasks)-1 {
+			delete(t.taskGroups, taskGroup.id)
+		}
 		return &nextTask
 	}
-	// If all the tasks have been dispatched, remove the taskGroup.
-	delete(t.taskGroups, taskGroup.id)
+	grip.Alert(message.Fields{
+		"message": "programmer error, no dispatchable tasks in group",
+	})
 	return nil
 }
 

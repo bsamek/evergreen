@@ -84,7 +84,7 @@ func (s *taskDispatchDAGServiceSuite) TestConstructor() {
 	s.Require().NotNil(newDistroTaskDAGDispatchService("distro_1", s.items, time.Minute))
 }
 
-func (s *taskDispatchDAGServiceSuite) TestEmptyService() {
+func (s *taskDispatchDAGServiceSuite) TestDispatchOneTask() {
 	service := newDistroTaskDAGDispatchService("distro_1", []TaskQueueItem{
 		{
 			Id:    "0",
@@ -279,3 +279,5 @@ func (s *taskDispatchDAGServiceSuite) TestFindNextTask() {
 		s.Equal("version_1", next.Version)
 	}
 }
+
+// TODO Test tasks with dependencies
