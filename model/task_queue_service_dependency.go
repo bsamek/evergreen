@@ -129,7 +129,7 @@ func (t *taskDistroDAGDispatchService) rebuild(items []TaskQueueItem) {
 			id := compositeGroupId(item.Group, item.BuildVariant, item.Version)
 			if _, ok := t.taskGroups[id]; !ok {
 				t.taskGroups[id] = taskGroupTasks{
-					id:       item.Id,
+					id:       id,
 					maxHosts: item.GroupMaxHosts,
 					tasks:    []TaskQueueItem{item},
 				}

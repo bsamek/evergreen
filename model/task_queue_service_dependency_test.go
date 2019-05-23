@@ -80,40 +80,9 @@ func (s *taskDispatchDAGServiceSuite) SetupTest() {
 
 }
 
-// func (s *taskDispatchDAGServiceSuite) TestConstructor() {
-// 	service := newDistroTaskDAGDispatchService("distro_1", s.items, time.Minute)
-// 	s.Len(service.order, 24, "20 bare tasks + 4 task groups")
-// 	s.Len(service.units, 24, "20 bare tasks + 4 task groups")
-// 	s.Equal(len(service.order), len(service.units), "order and units should have same length")
-
-// 	s.Contains(service.order, compositeGroupId("group_1", "variant_1", "version_1"))
-// 	s.Contains(service.units, compositeGroupId("group_1", "variant_1", "version_1"))
-// 	s.Len(service.units[compositeGroupId("group_1", "variant_1", "version_1")].tasks, 20)
-
-// 	s.Contains(service.order, compositeGroupId("group_2", "variant_1", "version_1"))
-// 	s.Contains(service.units, compositeGroupId("group_2", "variant_1", "version_1"))
-// 	s.Len(service.units[compositeGroupId("group_2", "variant_1", "version_1")].tasks, 20)
-
-// 	s.Contains(service.order, compositeGroupId("group_1", "variant_2", "version_1"))
-// 	s.Contains(service.units, compositeGroupId("group_1", "variant_2", "version_1"))
-// 	s.Len(service.units[compositeGroupId("group_1", "variant_2", "version_1")].tasks, 20)
-
-// 	s.Contains(service.order, compositeGroupId("group_1", "variant_1", "version_2"))
-// 	s.Contains(service.units, compositeGroupId("group_1", "variant_1", "version_2"))
-// 	s.Len(service.units[compositeGroupId("group_1", "variant_1", "version_2")].tasks, 20)
-
-// 	for i := 0; i < 100; i = i + 5 {
-// 		s.Contains(service.order, fmt.Sprintf("%d", i))
-// 	}
-// 	for i := 0; i < 100; i = i + 5 {
-// 		s.Contains(service.order, fmt.Sprintf("%d", i))
-// 	}
-// 	for i := 0; i < 100; i++ {
-// 		if i%5 != 0 {
-// 			s.NotContains(service.order, fmt.Sprintf("%d", i))
-// 		}
-// 	}
-// }
+func (s *taskDispatchDAGServiceSuite) TestConstructor() {
+	s.Require().NotNil(newDistroTaskDAGDispatchService("distro_1", s.items, time.Minute))
+}
 
 func (s *taskDispatchDAGServiceSuite) TestEmptyService() {
 	service := newDistroTaskDAGDispatchService("distro_1", []TaskQueueItem{
@@ -127,7 +96,6 @@ func (s *taskDispatchDAGServiceSuite) TestEmptyService() {
 	s.Equal("0", next.Id)
 	next = service.FindNextTask(TaskSpec{})
 	s.Nil(next)
-	// s.Empty(service.order) // slice is emptied when map is emptied
 }
 
 func (s *taskDispatchDAGServiceSuite) TestSingleHostTaskGroupsBlock() {
