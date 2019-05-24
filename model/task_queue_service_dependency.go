@@ -37,7 +37,7 @@ type taskGroupTasks struct {
 }
 
 // taskDistroDAGDispatchService creates a taskDistroDAGDispatchService from a slice of TaskQueueItems.
-func newDistroTaskDAGDispatchService(distroID string, items []TaskQueueItem, ttl time.Duration) *taskDistroDAGDispatchService {
+func newDistroTaskDAGDispatchService(distroID string, items []TaskQueueItem, ttl time.Duration) TaskDistroQueueService {
 	t := &taskDistroDAGDispatchService{
 		distroID: distroID,
 		ttl:      ttl,
@@ -217,10 +217,10 @@ func (t *taskDistroDAGDispatchService) FindNextTask(spec TaskSpec) *TaskQueueIte
 		// tasks that had dependencies when we built the queue.
 		// TODO Consider checking if the state of any tasks have changed, which could unblock
 		// later tasks in the queue. Currently we just wait for the scheduler to rerun.
-		// TODO Adding item.GroupsMaxHosts == 0 makes the tests pass, but I don't know why.
-		if len(t.graph.From(node)) > 0 && item.GroupMaxHosts == 0 {
-			break
-		}
+		// This means a task has dependencies
+		// if len(t.graph.From(node))
+		// 	break
+		// }
 
 		// For a task not in a task group, dispatch it if it hasn't been dispatched.
 		if item.GroupMaxHosts == 0 {
