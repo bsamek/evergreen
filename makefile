@@ -130,8 +130,12 @@ smoke-test-endpoints:$(localClientBinary) load-smoke-data
 	./$< service deploy start-evergreen --web --binary ./$< &
 	./$< service deploy test-endpoints || (pkill -f $<; exit 1)
 	pkill -f $<
-smoke-start-server:$(localClientBinary) load-smoke-data
+start-web:$(localClientBinary) load-smoke-data
 	./$< service deploy start-evergreen --web
+start-evergreen:$(localClientBinary) load-smoke-data set-var
+	@./bin/set-var -dbName mci_smoke -collection hosts -id localhost -key agent_revision -value $(currentHash)
+	./$< service deploy start-evergreen --web --binary ./$< &
+	./$< service deploy start-evergreen --agent --binary ./$< &
 # end smoke test rules
 
 ######################################################################
